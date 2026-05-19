@@ -26,87 +26,21 @@ struct gpio_config {
 };
 
 struct adc_config {
-  struct polling_backend_config {
-    ADC_InitTypeDef init;
-    ADC_ChannelConfTypeDef channel_init;
-  };
-
-  struct dma_backend_config {
-    struct continuous_trigger_config {};
-
-    struct timer_trigger_config {
-      uintptr_t timer_instance_base;
-      uint32_t counter_clock_hz;
-      uint32_t frequency_hz;
-      TIM_Base_InitTypeDef timer_init;
-      TIM_MasterConfigTypeDef master_config;
-
-      TIM_TypeDef* timer_instance() const noexcept {
-        return reinterpret_cast<TIM_TypeDef*>(timer_instance_base);
-      }
-    };
-
-    using trigger_config =
-        std::variant<continuous_trigger_config, timer_trigger_config>;
-
-    ADC_InitTypeDef init;
-    ADC_ChannelConfTypeDef channel_init;
-    std::size_t frame_count;
-    uint32_t request;
-    uintptr_t dma_channel_base;
-    IRQn_Type irq;
-    trigger_config trigger;
-
-    DMA_Channel_TypeDef* dma_channel() const noexcept {
-      return reinterpret_cast<DMA_Channel_TypeDef*>(dma_channel_base);
-    }
-
-    constexpr const continuous_trigger_config* continuous_trigger() const noexcept {
-      return std::get_if<continuous_trigger_config>(&trigger);
-    }
-
-    constexpr const timer_trigger_config* timer_trigger() const noexcept {
-      return std::get_if<timer_trigger_config>(&trigger);
-    }
-
-    static constexpr dma_backend_config continuous(
-        const ADC_InitTypeDef& init, const ADC_ChannelConfTypeDef& channel_init,
-        const std::size_t frame_count, const uint32_t request,
-        const uintptr_t dma_channel_base, const IRQn_Type irq) noexcept {
-      return dma_backend_config{
-          .init = init,
-          .channel_init = channel_init,
-          .frame_count = frame_count,
-          .request = request,
-          .dma_channel_base = dma_channel_base,
-          .irq = irq,
-          .trigger = continuous_trigger_config{},
-      };
-    }
-
-    static constexpr dma_backend_config timer_triggered(
-        const ADC_InitTypeDef& init, const ADC_ChannelConfTypeDef& channel_init,
-        const std::size_t frame_count, const uint32_t request,
-        const uintptr_t dma_channel_base, const IRQn_Type irq,
-        const timer_trigger_config& trigger) noexcept {
-      return dma_backend_config{
-          .init = init,
-          .channel_init = channel_init,
-          .frame_count = frame_count,
-          .request = request,
-          .dma_channel_base = dma_channel_base,
-          .irq = irq,
-          .trigger = trigger,
-      };
-    }
-  };
-
-  using backend_config = std::variant<polling_backend_config, dma_backend_config>;
-
   uintptr_t instance_base;
   uintptr_t port_base;
   GPIO_InitTypeDef pin_init;
-  backend_config backend;
+  ADC_InitTypeDef init;
+  ADC_ChannelConfTypeDef channel_init;
+  bool uses_dma;
+  std::size_t dma_frame_count;
+  uint32_t dma_request;
+  uintptr_t dma_channel_base;
+  IRQn_Type dma_irq;
+  uintptr_t trigger_timer_instance_base;
+  uint32_t trigger_counter_clock_hz;
+  uint32_t trigger_frequency_hz;
+  TIM_Base_InitTypeDef trigger_timer_init;
+  TIM_MasterConfigTypeDef trigger_master_config;
 
   ADC_TypeDef* instance() const noexcept {
     return reinterpret_cast<ADC_TypeDef*>(instance_base);
@@ -116,40 +50,68 @@ struct adc_config {
     return reinterpret_cast<GPIO_TypeDef*>(port_base);
   }
 
-  uint16_t pin() const noexcept {
-    return static_cast<uint16_t>(pin_init.Pin);
+  DMA_Channel_TypeDef* dma_channel() const noexcept {
+    return reinterpret_cast<DMA_Channel_TypeDef*>(dma_channel_base);
   }
 
-  constexpr const polling_backend_config* polling() const noexcept {
-    return std::get_if<polling_backend_config>(&backend);
+  TIM_TypeDef* trigger_timer_instance() const noexcept {
+    return reinterpret_cast<TIM_TypeDef*>(trigger_timer_instance_base);
   }
 
-  constexpr const dma_backend_config* dma() const noexcept {
-    return std::get_if<dma_backend_config>(&backend);
+  bool uses_timer_trigger() const noexcept {
+    return trigger_timer_instance_base != 0U;
   }
-
-  constexpr bool uses_dma() const noexcept { return dma() != nullptr; }
 
   static constexpr adc_config polling_config(
       const uintptr_t instance_base, const uintptr_t port_base,
-      const GPIO_InitTypeDef& pin_init,
-      const polling_backend_config& polling) noexcept {
+      const GPIO_InitTypeDef& pin_init, const ADC_InitTypeDef& init,
+      const ADC_ChannelConfTypeDef& channel_init) noexcept {
     return adc_config{
         .instance_base = instance_base,
         .port_base = port_base,
         .pin_init = pin_init,
-        .backend = polling,
+        .init = init,
+        .channel_init = channel_init,
+        .uses_dma = false,
+        .dma_frame_count = 0U,
+        .dma_request = 0U,
+        .dma_channel_base = 0U,
+        .dma_irq = static_cast<IRQn_Type>(0),
+        .trigger_timer_instance_base = 0U,
+        .trigger_counter_clock_hz = 0U,
+        .trigger_frequency_hz = 0U,
+        .trigger_timer_init = {},
+        .trigger_master_config = {},
     };
   }
 
   static constexpr adc_config dma_config(
       const uintptr_t instance_base, const uintptr_t port_base,
-      const GPIO_InitTypeDef& pin_init, const dma_backend_config& dma) noexcept {
+      const GPIO_InitTypeDef& pin_init, const ADC_InitTypeDef& init,
+      const ADC_ChannelConfTypeDef& channel_init, const std::size_t dma_frame_count,
+      const uint32_t dma_request, const uintptr_t dma_channel_base,
+      const IRQn_Type dma_irq,
+      const uintptr_t trigger_timer_instance_base = 0U,
+      const uint32_t trigger_counter_clock_hz = 0U,
+      const uint32_t trigger_frequency_hz = 0U,
+      const TIM_Base_InitTypeDef& trigger_timer_init = {},
+      const TIM_MasterConfigTypeDef& trigger_master_config = {}) noexcept {
     return adc_config{
         .instance_base = instance_base,
         .port_base = port_base,
         .pin_init = pin_init,
-        .backend = dma,
+        .init = init,
+        .channel_init = channel_init,
+        .uses_dma = true,
+        .dma_frame_count = dma_frame_count,
+        .dma_request = dma_request,
+        .dma_channel_base = dma_channel_base,
+        .dma_irq = dma_irq,
+        .trigger_timer_instance_base = trigger_timer_instance_base,
+        .trigger_counter_clock_hz = trigger_counter_clock_hz,
+        .trigger_frequency_hz = trigger_frequency_hz,
+        .trigger_timer_init = trigger_timer_init,
+        .trigger_master_config = trigger_master_config,
     };
   }
 };

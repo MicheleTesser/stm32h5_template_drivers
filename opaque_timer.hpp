@@ -21,6 +21,7 @@ struct opaque_timer {
  private:
   friend class Timer;
 
+  bool initialized() const noexcept;
   result init(const stm32h5xx::cfg::timer_config& config) const noexcept;
   result stop() const noexcept;
   expected::expected<uint64_t, result> time_now() const noexcept;

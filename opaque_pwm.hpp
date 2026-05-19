@@ -65,6 +65,8 @@ struct opaque_pwm {
 
   result init(const stm32h5xx::cfg::pwm_config& config,
               uint32_t frequency_hz) noexcept;
+  bool initialized() const noexcept;
+  void reset() noexcept;
   result enable() noexcept;
   result disable() noexcept;
   result deinit() noexcept;
