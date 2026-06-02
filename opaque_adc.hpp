@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -10,6 +11,8 @@
 #include "stm32h5xx_hal.h"  // IWYU pragma: keep
 
 namespace ru::driver {
+
+constexpr std::size_t kAdcDmaMaxSequenceLength = 16U;
 
 class Adc;
 
@@ -30,7 +33,10 @@ struct opaque_adc {
   const GPIO_InitTypeDef& pin_init() const noexcept;
   const ADC_InitTypeDef& adc_init() const noexcept;
   const ADC_ChannelConfTypeDef& channel_init() const noexcept;
+  const ADC_ChannelConfTypeDef* dma_channel_sequence() const noexcept;
   std::size_t dma_frame_count() const noexcept;
+  std::size_t dma_sequence_length() const noexcept;
+  std::size_t dma_sequence_index() const noexcept;
   stm32h5xx::cfg::adc_dma_backend dma_backend() const noexcept;
   std::size_t dma_window_width() const noexcept;
   uint32_t dma_request() const noexcept;
@@ -60,9 +66,6 @@ struct opaque_adc {
   DMA_NodeTypeDef m_dma_node{};
   DMA_QListTypeDef m_dma_queue{};
   DMA_HandleTypeDef m_dma_channel_handle{};
-  std::size_t m_processed_samples_in_cycle{0U};
-  uint64_t m_sum{0U};
-  uint32_t m_sample_count{0U};
   const stm32h5xx::cfg::adc_config* m_p_config{nullptr};
 };
 }  // namespace ru::driver

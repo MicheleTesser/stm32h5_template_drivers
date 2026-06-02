@@ -36,6 +36,9 @@ struct adc_config {
   GPIO_InitTypeDef pin_init;
   ADC_InitTypeDef init;
   ADC_ChannelConfTypeDef channel_init;
+  const ADC_ChannelConfTypeDef* dma_channel_sequence;
+  std::size_t dma_channel_sequence_length;
+  std::size_t dma_sequence_index;
   bool uses_dma;
   std::size_t dma_frame_count;
   adc_dma_backend dma_backend;
@@ -79,6 +82,9 @@ struct adc_config {
         .pin_init = pin_init,
         .init = init,
         .channel_init = channel_init,
+        .dma_channel_sequence = nullptr,
+        .dma_channel_sequence_length = 0U,
+        .dma_sequence_index = 0U,
         .uses_dma = false,
         .dma_frame_count = 0U,
         .dma_backend = adc_dma_backend::average_since_read,
@@ -102,6 +108,9 @@ struct adc_config {
       const IRQn_Type dma_irq,
       const adc_dma_backend dma_backend = adc_dma_backend::average_since_read,
       const std::size_t dma_window_width = 0U,
+      const ADC_ChannelConfTypeDef* dma_channel_sequence = nullptr,
+      const std::size_t dma_channel_sequence_length = 0U,
+      const std::size_t dma_sequence_index = 0U,
       const uintptr_t trigger_timer_instance_base = 0U,
       const uint32_t trigger_counter_clock_hz = 0U,
       const uint32_t trigger_frequency_hz = 0U,
@@ -113,6 +122,9 @@ struct adc_config {
         .pin_init = pin_init,
         .init = init,
         .channel_init = channel_init,
+        .dma_channel_sequence = dma_channel_sequence,
+        .dma_channel_sequence_length = dma_channel_sequence_length,
+        .dma_sequence_index = dma_sequence_index,
         .uses_dma = true,
         .dma_frame_count = dma_frame_count,
         .dma_backend = dma_backend,

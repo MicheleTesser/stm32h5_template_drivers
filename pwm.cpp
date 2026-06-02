@@ -295,13 +295,14 @@ result Pwm::set_frequency(const uint32_t frequency_hz) noexcept {
     return result::UNRECOVERABLE_ERROR;
   }
 
-  if (!m_opaque.initialized()) {
-    return result::UNRECOVERABLE_ERROR;
-  }
-
-  const auto duty_cycle = m_opaque.get_duty_cycle();
-  if (!duty_cycle.has_value() && m_opaque.is_enabled()) {
-    return duty_cycle.error();
+  const bool was_initialized = m_opaque.initialized();
+  const bool was_enabled = m_opaque.is_enabled();
+  auto duty_cycle = expected::expected<uint16_t, result>{0U};
+  if (was_initialized) {
+    duty_cycle = m_opaque.get_duty_cycle();
+    if (!duty_cycle.has_value() && was_enabled) {
+      return duty_cycle.error();
+    }
   }
 
   const auto stop_status = m_opaque.disable();
@@ -321,7 +322,7 @@ result Pwm::set_frequency(const uint32_t frequency_hz) noexcept {
     return init_status;
   }
 
-  if (duty_cycle.has_value()) {
+  if (was_initialized && duty_cycle.has_value()) {
     const auto duty_status = m_opaque.update_duty_cycle(duty_cycle.value());
     if (duty_status != result::OK) {
       return duty_status;

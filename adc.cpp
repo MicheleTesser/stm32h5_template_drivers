@@ -150,6 +150,11 @@ std::size_t dma_transfer_length(const opaque_adc& config) noexcept {
   return config.dma_frame_count() == 0U ? 1U : config.dma_frame_count();
 }
 
+std::size_t dma_sequence_length(const opaque_adc& config) noexcept {
+  const auto configured_length = config.dma_sequence_length();
+  return configured_length == 0U ? 1U : configured_length;
+}
+
 std::size_t dma_window_width(const opaque_adc& config) noexcept {
   const auto configured_width = config.dma_window_width();
   return configured_width == 0U ? dma_transfer_length(config) : configured_width;
@@ -175,6 +180,29 @@ opaque_adc*& dma_owner_slot(ADC_TypeDef* const p_instance) noexcept {
       return adc2_owner;
     default:
       return invalid_owner;
+  }
+}
+
+struct dma_shared_state {
+  std::size_t processed_samples_in_cycle{0U};
+  std::array<uint64_t, kAdcDmaMaxSequenceLength> average_sums{};
+  std::array<uint32_t, kAdcDmaMaxSequenceLength> average_sample_counts{};
+  uint64_t fixed_window_sum{0U};
+  uint32_t fixed_window_count{0U};
+};
+
+dma_shared_state& dma_state_slot(ADC_TypeDef* const p_instance) noexcept {
+  static dma_shared_state adc1_state{};
+  static dma_shared_state adc2_state{};
+  static dma_shared_state invalid_state{};
+
+  switch (reinterpret_cast<uintptr_t>(p_instance)) {
+    case ADC1_BASE:
+      return adc1_state;
+    case ADC2_BASE:
+      return adc2_state;
+    default:
+      return invalid_state;
   }
 }
 
@@ -209,6 +237,10 @@ opaque_adc* adc_from_handle(ADC_HandleTypeDef* const hadc) noexcept {
   return hadc != nullptr ? dma_owner_for_instance(hadc->Instance) : nullptr;
 }
 
+dma_shared_state& dma_state(opaque_adc& runtime) noexcept {
+  return dma_state_slot(runtime.instance());
+}
+
 void accumulate_dma_samples(opaque_adc& runtime, const std::size_t begin_sample,
                             const std::size_t end_sample) noexcept {
   const auto active_buffer_length = dma_transfer_length(runtime);
@@ -220,21 +252,25 @@ void accumulate_dma_samples(opaque_adc& runtime, const std::size_t begin_sample,
 
   const std::size_t begin = std::min(begin_sample, active_buffer_length);
   const std::size_t end = std::min(end_sample, active_buffer_length);
+  const auto sequence_length = dma_sequence_length(runtime);
+  auto& state = dma_state(runtime);
   auto* const buffer = dma_buffer(runtime);
 
   for (std::size_t sample = begin; sample < end; ++sample) {
-    runtime.m_sum += buffer[sample];
-    runtime.m_sample_count += 1U;
+    const auto channel_index = sample % sequence_length;
+    state.average_sums[channel_index] += buffer[sample];
+    state.average_sample_counts[channel_index] += 1U;
   }
 }
 
 void accumulate_dma_until(opaque_adc& runtime, const std::size_t boundary) noexcept {
-  if (boundary <= runtime.m_processed_samples_in_cycle) {
+  auto& state = dma_state(runtime);
+  if (boundary <= state.processed_samples_in_cycle) {
     return;
   }
 
-  accumulate_dma_samples(runtime, runtime.m_processed_samples_in_cycle, boundary);
-  runtime.m_processed_samples_in_cycle = boundary;
+  accumulate_dma_samples(runtime, state.processed_samples_in_cycle, boundary);
+  state.processed_samples_in_cycle = boundary;
 }
 
 uint64_t sum_fixed_dma_window(const opaque_adc& runtime,
@@ -265,45 +301,68 @@ uint64_t sum_fixed_dma_window(const opaque_adc& runtime,
 void complete_fixed_dma_window(opaque_adc& runtime,
                                const std::size_t boundary) noexcept {
   const auto active_buffer_length = dma_transfer_length(runtime);
+  auto& state = dma_state(runtime);
   if (active_buffer_length == 0U || boundary > active_buffer_length ||
-      boundary <= runtime.m_processed_samples_in_cycle) {
+      boundary <= state.processed_samples_in_cycle) {
     return;
   }
 
   const auto window_width = dma_window_width(runtime);
-  const auto completed_count = boundary - runtime.m_processed_samples_in_cycle;
-  const auto previous_valid_count = runtime.m_sample_count & DMA_SAMPLE_COUNT_MASK;
+  const auto completed_count = boundary - state.processed_samples_in_cycle;
+  const auto previous_valid_count = state.fixed_window_count & DMA_SAMPLE_COUNT_MASK;
   const auto valid_count =
       std::min<uint32_t>(static_cast<uint32_t>(window_width),
                          previous_valid_count + static_cast<uint32_t>(completed_count));
 
-  runtime.m_processed_samples_in_cycle = boundary;
+  state.processed_samples_in_cycle = boundary;
   if (valid_count < window_width) {
-    runtime.m_sample_count = valid_count;
+    state.fixed_window_count = valid_count;
     return;
   }
 
-  runtime.m_sum = sum_fixed_dma_window(runtime, boundary);
-  runtime.m_sample_count = static_cast<uint32_t>(window_width) | DMA_FIXED_WINDOW_READY;
+  state.fixed_window_sum = sum_fixed_dma_window(runtime, boundary);
+  state.fixed_window_count = static_cast<uint32_t>(window_width) | DMA_FIXED_WINDOW_READY;
 }
 
 bool prepare_dma_runtime(opaque_adc& runtime) noexcept {
-  init_pin(runtime.port(), runtime.pin_init());
-  runtime.m_sum = 0U;
-  runtime.m_sample_count = 0U;
-  runtime.m_processed_samples_in_cycle = 0U;
+  auto& state = dma_state(runtime);
+  state.average_sums.fill(0U);
+  state.average_sample_counts.fill(0U);
+  state.fixed_window_sum = 0U;
+  state.fixed_window_count = 0U;
+  state.processed_samples_in_cycle = 0U;
   const auto active_buffer_length = dma_transfer_length(runtime);
+  const auto sequence_length = dma_sequence_length(runtime);
   const auto window_width = dma_window_width(runtime);
   return dma_buffer(runtime) != nullptr &&
          active_buffer_length <= dma_buffer_size_for(runtime.m_p_config) &&
+         sequence_length > 0U && sequence_length <= kAdcDmaMaxSequenceLength &&
+         (!uses_fixed_window_average(runtime) || sequence_length == 1U) &&
          window_width > 0U && window_width <= active_buffer_length &&
          window_width <= DMA_SAMPLE_COUNT_MASK;
 }
 
-bool configure_adc_channel(opaque_adc& runtime) noexcept {
-  auto channel_config = runtime.channel_init();
-  channel_config.Rank = ADC_REGULAR_RANK_1;
-  return HAL_ADC_ConfigChannel(&runtime.m_handle, &channel_config) == HAL_OK;
+bool configure_adc_channels(opaque_adc& runtime) noexcept {
+  const auto sequence_length = dma_sequence_length(runtime);
+  if (sequence_length == 1U) {
+    auto channel_config = runtime.channel_init();
+    channel_config.Rank = ADC_REGULAR_RANK_1;
+    return HAL_ADC_ConfigChannel(&runtime.m_handle, &channel_config) == HAL_OK;
+  }
+
+  const auto* const channel_sequence = runtime.dma_channel_sequence();
+  if (channel_sequence == nullptr) {
+    return false;
+  }
+
+  for (std::size_t index = 0U; index < sequence_length; ++index) {
+    auto channel_config = channel_sequence[index];
+    if (HAL_ADC_ConfigChannel(&runtime.m_handle, &channel_config) != HAL_OK) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 bool init_trigger_timer(opaque_adc& runtime) noexcept {
@@ -428,7 +487,7 @@ bool start_dma_backend_impl(opaque_adc& runtime) noexcept {
     return fail();
   }
 
-  if (!configure_adc_channel(runtime)) {
+  if (!configure_adc_channels(runtime)) {
     return fail();
   }
 
@@ -461,15 +520,21 @@ void unlock_irq(const uint32_t primask) noexcept {
 
 expected::expected<uint16_t, result> read_dma_average(const opaque_adc& config) noexcept {
   auto* const runtime = running_dma_owner_for(config);
-  if (runtime == nullptr || runtime != &config) {
+  if (runtime == nullptr) {
     return expected::unexpected(result::RECOVERABLE_ERROR);
   }
 
+  const auto channel_index = config.dma_sequence_index();
+  if (channel_index >= dma_sequence_length(*runtime)) {
+    return expected::unexpected(result::RECOVERABLE_ERROR);
+  }
+
+  auto& state = dma_state(*runtime);
   const uint32_t primask = lock_irq();
-  const uint64_t sum = runtime->m_sum;
-  const uint32_t count = runtime->m_sample_count;
-  runtime->m_sum = 0U;
-  runtime->m_sample_count = 0U;
+  const uint64_t sum = state.average_sums[channel_index];
+  const uint32_t count = state.average_sample_counts[channel_index];
+  state.average_sums[channel_index] = 0U;
+  state.average_sample_counts[channel_index] = 0U;
   unlock_irq(primask);
 
   if (count == 0U) {
@@ -487,10 +552,11 @@ expected::expected<uint16_t, result> read_dma_fixed_window_average(
   }
 
   const auto window_width = dma_window_width(*runtime);
+  auto& state = dma_state(*runtime);
   const uint32_t primask = lock_irq();
-  const uint64_t sum = runtime->m_sum;
-  const uint32_t count = runtime->m_sample_count;
-  runtime->m_sample_count = count & DMA_SAMPLE_COUNT_MASK;
+  const uint64_t sum = state.fixed_window_sum;
+  const uint32_t count = state.fixed_window_count;
+  state.fixed_window_count = count & DMA_SAMPLE_COUNT_MASK;
   unlock_irq(primask);
 
   if ((count & DMA_FIXED_WINDOW_READY) == 0U) {
@@ -503,15 +569,21 @@ expected::expected<uint16_t, result> read_dma_fixed_window_average(
 expected::expected<std::optional<uint16_t>, result> try_read_dma_average(
     const opaque_adc& config) noexcept {
   auto* const runtime = running_dma_owner_for(config);
-  if (runtime == nullptr || runtime != &config) {
+  if (runtime == nullptr) {
     return expected::unexpected(result::RECOVERABLE_ERROR);
   }
 
+  const auto channel_index = config.dma_sequence_index();
+  if (channel_index >= dma_sequence_length(*runtime)) {
+    return expected::unexpected(result::RECOVERABLE_ERROR);
+  }
+
+  auto& state = dma_state(*runtime);
   const uint32_t primask = lock_irq();
-  const uint64_t sum = runtime->m_sum;
-  const uint32_t count = runtime->m_sample_count;
-  runtime->m_sum = 0U;
-  runtime->m_sample_count = 0U;
+  const uint64_t sum = state.average_sums[channel_index];
+  const uint32_t count = state.average_sample_counts[channel_index];
+  state.average_sums[channel_index] = 0U;
+  state.average_sample_counts[channel_index] = 0U;
   unlock_irq(primask);
 
   if (count == 0U) {
@@ -529,10 +601,11 @@ expected::expected<std::optional<uint16_t>, result> try_read_dma_fixed_window_av
   }
 
   const auto window_width = dma_window_width(*runtime);
+  auto& state = dma_state(*runtime);
   const uint32_t primask = lock_irq();
-  const uint64_t sum = runtime->m_sum;
-  const uint32_t count = runtime->m_sample_count;
-  runtime->m_sample_count = count & DMA_SAMPLE_COUNT_MASK;
+  const uint64_t sum = state.fixed_window_sum;
+  const uint32_t count = state.fixed_window_count;
+  state.fixed_window_count = count & DMA_SAMPLE_COUNT_MASK;
   unlock_irq(primask);
 
   if ((count & DMA_FIXED_WINDOW_READY) == 0U) {
@@ -568,7 +641,7 @@ void adc_dma_full_transfer_callback(ADC_HandleTypeDef* hadc) noexcept {
   } else {
     accumulate_dma_until(*runtime, dma_transfer_length(*runtime));
   }
-  runtime->m_processed_samples_in_cycle = 0U;
+  dma_state(*runtime).processed_samples_in_cycle = 0U;
 }
 
 void adc_dma_irq_handler(ADC_TypeDef* const p_instance) noexcept {
@@ -582,7 +655,7 @@ void adc_dma_irq_handler(ADC_TypeDef* const p_instance) noexcept {
 
 bool opaque_adc::initialized() const noexcept {
   if (uses_dma()) {
-    return running_dma_owner_for(*this) == this;
+    return running_dma_owner_for(*this) != nullptr;
   }
 
   return m_handle.Instance != nullptr;
@@ -623,8 +696,20 @@ const ADC_ChannelConfTypeDef& opaque_adc::channel_init() const noexcept {
   return m_p_config->channel_init;
 }
 
+const ADC_ChannelConfTypeDef* opaque_adc::dma_channel_sequence() const noexcept {
+  return m_p_config != nullptr ? m_p_config->dma_channel_sequence : nullptr;
+}
+
 std::size_t opaque_adc::dma_frame_count() const noexcept {
   return m_p_config != nullptr ? m_p_config->dma_frame_count : 0U;
+}
+
+std::size_t opaque_adc::dma_sequence_length() const noexcept {
+  return m_p_config != nullptr ? m_p_config->dma_channel_sequence_length : 0U;
+}
+
+std::size_t opaque_adc::dma_sequence_index() const noexcept {
+  return m_p_config != nullptr ? m_p_config->dma_sequence_index : 0U;
 }
 
 stm32h5xx::cfg::adc_dma_backend opaque_adc::dma_backend() const noexcept {
@@ -681,6 +766,8 @@ result opaque_adc::init() noexcept {
     return result::UNRECOVERABLE_ERROR;
   }
 
+  init_pin(port(), pin_init());
+
   if (uses_dma()) {
     if (initialized()) {
       return result::OK;
@@ -692,8 +779,6 @@ result opaque_adc::init() noexcept {
   if (initialized()) {
     return result::OK;
   }
-
-  init_pin(port(), pin_init());
 
   m_handle.Instance = instance();
   m_handle.Init = adc_init();

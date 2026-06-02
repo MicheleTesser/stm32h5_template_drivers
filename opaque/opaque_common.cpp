@@ -73,7 +73,8 @@ static result configure_system_clock() noexcept {
     return result::RECOVERABLE_ERROR;
   }
 
-  periph_clk_init.PeriphClockSelection = RCC_PERIPHCLK_ADCDAC | RCC_PERIPHCLK_FDCAN;
+  periph_clk_init.PeriphClockSelection =
+      RCC_PERIPHCLK_ADCDAC | RCC_PERIPHCLK_FDCAN | RCC_PERIPHCLK_LPTIM2;
   periph_clk_init.PLL2.PLL2Source = RCC_PLL2_SOURCE_HSE;
   periph_clk_init.PLL2.PLL2M = 2U;
   periph_clk_init.PLL2.PLL2N = 60U;
@@ -86,6 +87,7 @@ static result configure_system_clock() noexcept {
   periph_clk_init.PLL2.PLL2ClockOut = RCC_PLL2_DIVQ | RCC_PLL2_DIVR;
   periph_clk_init.FdcanClockSelection = RCC_FDCANCLKSOURCE_PLL2Q;
   periph_clk_init.AdcDacClockSelection = RCC_ADCDACCLKSOURCE_PLL2R;
+  periph_clk_init.Lptim2ClockSelection = RCC_LPTIM2CLKSOURCE_PCLK1;
   if (HAL_RCCEx_PeriphCLKConfig(&periph_clk_init) != HAL_OK) {
     return result::RECOVERABLE_ERROR;
   }
