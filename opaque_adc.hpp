@@ -33,6 +33,7 @@ struct opaque_adc {
   const GPIO_InitTypeDef& pin_init() const noexcept;
   const ADC_InitTypeDef& adc_init() const noexcept;
   const ADC_ChannelConfTypeDef& channel_init() const noexcept;
+  uint32_t polling_timeout_ms() const noexcept;
   const ADC_ChannelConfTypeDef* dma_channel_sequence() const noexcept;
   std::size_t dma_frame_count() const noexcept;
   std::size_t dma_sequence_length() const noexcept;

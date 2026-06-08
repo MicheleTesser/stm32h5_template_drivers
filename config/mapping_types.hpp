@@ -12,6 +12,8 @@ enum class adc_dma_backend {
   fixed_window_average,
 };
 
+inline constexpr uint32_t kDefaultAdcPollTimeoutMs = 2U;
+
 struct gpio_config {
   uintptr_t port_base;
   bool active_high;
@@ -36,6 +38,7 @@ struct adc_config {
   GPIO_InitTypeDef pin_init;
   ADC_InitTypeDef init;
   ADC_ChannelConfTypeDef channel_init;
+  uint32_t polling_timeout_ms;
   const ADC_ChannelConfTypeDef* dma_channel_sequence;
   std::size_t dma_channel_sequence_length;
   std::size_t dma_sequence_index;
@@ -75,13 +78,15 @@ struct adc_config {
   static constexpr adc_config polling_config(
       const uintptr_t instance_base, const uintptr_t port_base,
       const GPIO_InitTypeDef& pin_init, const ADC_InitTypeDef& init,
-      const ADC_ChannelConfTypeDef& channel_init) noexcept {
+      const ADC_ChannelConfTypeDef& channel_init,
+      const uint32_t polling_timeout_ms = kDefaultAdcPollTimeoutMs) noexcept {
     return adc_config{
         .instance_base = instance_base,
         .port_base = port_base,
         .pin_init = pin_init,
         .init = init,
         .channel_init = channel_init,
+        .polling_timeout_ms = polling_timeout_ms,
         .dma_channel_sequence = nullptr,
         .dma_channel_sequence_length = 0U,
         .dma_sequence_index = 0U,
@@ -122,6 +127,7 @@ struct adc_config {
         .pin_init = pin_init,
         .init = init,
         .channel_init = channel_init,
+        .polling_timeout_ms = 0U,
         .dma_channel_sequence = dma_channel_sequence,
         .dma_channel_sequence_length = dma_channel_sequence_length,
         .dma_sequence_index = dma_sequence_index,

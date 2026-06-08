@@ -696,6 +696,11 @@ const ADC_ChannelConfTypeDef& opaque_adc::channel_init() const noexcept {
   return m_p_config->channel_init;
 }
 
+uint32_t opaque_adc::polling_timeout_ms() const noexcept {
+  return m_p_config != nullptr ? m_p_config->polling_timeout_ms
+                               : stm32h5xx::cfg::kDefaultAdcPollTimeoutMs;
+}
+
 const ADC_ChannelConfTypeDef* opaque_adc::dma_channel_sequence() const noexcept {
   return m_p_config != nullptr ? m_p_config->dma_channel_sequence : nullptr;
 }
@@ -842,7 +847,7 @@ result opaque_adc::read(uint16_t& r_value) noexcept {
     return result::RECOVERABLE_ERROR;
   }
 
-  if (HAL_ADC_PollForConversion(&m_handle, HAL_MAX_DELAY) != HAL_OK) {
+  if (HAL_ADC_PollForConversion(&m_handle, polling_timeout_ms()) != HAL_OK) {
     (void)HAL_ADC_Stop(&m_handle);
     return result::RECOVERABLE_ERROR;
   }
