@@ -144,6 +144,10 @@ expected::expected<std::optional<uint16_t>, result> Adc::try_read() noexcept {
   return std::optional<uint16_t>{value};
 }
 
+uint16_t Adc::sample_max() const noexcept {
+  return m_opaque.sample_max();
+}
+
 namespace {
 
 std::size_t dma_transfer_length(const opaque_adc& config) noexcept {
@@ -222,6 +226,19 @@ bool dma_initialized(const opaque_adc& config) noexcept {
 
 opaque_adc* running_dma_owner_for(const opaque_adc& config) noexcept {
   if (!config.uses_dma()) {
+    return nullptr;
+  }
+
+  auto* const owner = dma_owner_for_instance(config.instance());
+  if (owner == nullptr || !dma_initialized(*owner)) {
+    return nullptr;
+  }
+
+  return owner;
+}
+
+opaque_adc* running_injected_owner_for(const opaque_adc& config) noexcept {
+  if (!config.uses_injected()) {
     return nullptr;
   }
 
@@ -365,6 +382,21 @@ bool configure_adc_channels(opaque_adc& runtime) noexcept {
   return true;
 }
 
+bool configure_injected_channels(opaque_adc& runtime) noexcept {
+#define RU_STM32H5XX_ADC_CONFIGURE_INJECTED(name, config)                         \
+  if (config.uses_injected && config.instance() == runtime.instance()) {           \
+    init_pin(config.port(), config.pin_init);                                      \
+    auto injected_channel_config = config.injected_channel_init;                   \
+    if (HAL_ADCEx_InjectedConfigChannel(                                           \
+            &runtime.m_handle, &injected_channel_config) != HAL_OK) {              \
+      return false;                                                                \
+    }                                                                              \
+  }
+  RU_STM32H5XX_ADC_MAP(RU_STM32H5XX_ADC_CONFIGURE_INJECTED)
+#undef RU_STM32H5XX_ADC_CONFIGURE_INJECTED
+  return true;
+}
+
 bool init_trigger_timer(opaque_adc& runtime) noexcept {
   enable_tim_clock(runtime.trigger_timer_instance());
 
@@ -494,8 +526,15 @@ bool start_dma_backend_impl(opaque_adc& runtime) noexcept {
   auto* const buffer = dma_buffer(runtime);
   std::fill_n(buffer, dma_transfer_length(runtime), 0U);
 
-  if (HAL_ADCEx_Calibration_Start(&runtime.m_handle, ADC_SINGLE_ENDED) != HAL_OK ||
-      HAL_ADC_Start_DMA(&runtime.m_handle,
+  if (HAL_ADCEx_Calibration_Start(&runtime.m_handle, ADC_SINGLE_ENDED) != HAL_OK) {
+    return fail();
+  }
+
+  if (!configure_injected_channels(runtime)) {
+    return fail();
+  }
+
+  if (HAL_ADC_Start_DMA(&runtime.m_handle,
                         reinterpret_cast<uint32_t*>(buffer),
                         static_cast<uint32_t>(dma_transfer_length(runtime))) != HAL_OK) {
     return fail();
@@ -614,6 +653,60 @@ expected::expected<std::optional<uint16_t>, result> try_read_dma_fixed_window_av
 
   return std::optional<uint16_t>{static_cast<uint16_t>(sum / window_width)};
 }
+
+expected::expected<uint16_t, result> read_injected_conversion(
+    const opaque_adc& config) noexcept {
+  auto* const runtime = running_injected_owner_for(config);
+  if (runtime == nullptr) {
+    return expected::unexpected(result::RECOVERABLE_ERROR);
+  }
+
+  if (HAL_ADCEx_InjectedStart(&runtime->m_handle) != HAL_OK) {
+    return expected::unexpected(result::RECOVERABLE_ERROR);
+  }
+
+  if (HAL_ADCEx_InjectedPollForConversion(
+          &runtime->m_handle, config.polling_timeout_ms()) != HAL_OK) {
+    (void)HAL_ADCEx_InjectedStop(&runtime->m_handle);
+    return expected::unexpected(result::RECOVERABLE_ERROR);
+  }
+
+  const auto value = static_cast<uint16_t>(
+      HAL_ADCEx_InjectedGetValue(
+          &runtime->m_handle, config.injected_channel_init().InjectedRank));
+  (void)HAL_ADCEx_InjectedStop(&runtime->m_handle);
+  return value;
+}
+
+expected::expected<std::optional<uint16_t>, result> try_read_injected_conversion(
+    const opaque_adc& config) noexcept {
+  auto* const runtime = running_injected_owner_for(config);
+  if (runtime == nullptr) {
+    return expected::unexpected(result::RECOVERABLE_ERROR);
+  }
+
+  if (HAL_ADCEx_InjectedStart(&runtime->m_handle) != HAL_OK) {
+    return expected::unexpected(result::RECOVERABLE_ERROR);
+  }
+
+  const auto poll_status =
+      HAL_ADCEx_InjectedPollForConversion(&runtime->m_handle, 0U);
+  if (poll_status == HAL_TIMEOUT) {
+    (void)HAL_ADCEx_InjectedStop(&runtime->m_handle);
+    return std::optional<uint16_t>{};
+  }
+
+  if (poll_status != HAL_OK) {
+    (void)HAL_ADCEx_InjectedStop(&runtime->m_handle);
+    return expected::unexpected(result::RECOVERABLE_ERROR);
+  }
+
+  const auto value = static_cast<uint16_t>(
+      HAL_ADCEx_InjectedGetValue(
+          &runtime->m_handle, config.injected_channel_init().InjectedRank));
+  (void)HAL_ADCEx_InjectedStop(&runtime->m_handle);
+  return std::optional<uint16_t>{value};
+}
 }  // namespace
 
 void adc_dma_half_transfer_callback(ADC_HandleTypeDef* hadc) noexcept {
@@ -658,6 +751,10 @@ bool opaque_adc::initialized() const noexcept {
     return running_dma_owner_for(*this) != nullptr;
   }
 
+  if (uses_injected()) {
+    return running_injected_owner_for(*this) != nullptr;
+  }
+
   return m_handle.Instance != nullptr;
 }
 
@@ -674,6 +771,10 @@ std::optional<AdcId> opaque_adc::id() const noexcept {
 
 bool opaque_adc::uses_dma() const noexcept {
   return m_p_config != nullptr && m_p_config->uses_dma;
+}
+
+bool opaque_adc::uses_injected() const noexcept {
+  return m_p_config != nullptr && m_p_config->uses_injected;
 }
 
 ADC_TypeDef* opaque_adc::instance() const noexcept {
@@ -694,6 +795,20 @@ const ADC_InitTypeDef& opaque_adc::adc_init() const noexcept {
 
 const ADC_ChannelConfTypeDef& opaque_adc::channel_init() const noexcept {
   return m_p_config->channel_init;
+}
+
+const ADC_InjectionConfTypeDef& opaque_adc::injected_channel_init() const noexcept {
+  return m_p_config->injected_channel_init;
+}
+
+uint32_t opaque_adc::polling_timeout_ms() const noexcept {
+  return m_p_config != nullptr ? m_p_config->polling_timeout_ms
+                               : stm32h5xx::cfg::kDefaultAdcPollTimeoutMs;
+}
+
+uint16_t opaque_adc::sample_max() const noexcept {
+  return m_p_config != nullptr ? m_p_config->sample_max
+                               : stm32h5xx::cfg::kDefaultAdcSampleMax;
 }
 
 const ADC_ChannelConfTypeDef* opaque_adc::dma_channel_sequence() const noexcept {
@@ -768,6 +883,10 @@ result opaque_adc::init() noexcept {
 
   init_pin(port(), pin_init());
 
+  if (uses_injected()) {
+    return initialized() ? result::OK : result::RECOVERABLE_ERROR;
+  }
+
   if (uses_dma()) {
     if (initialized()) {
       return result::OK;
@@ -817,6 +936,10 @@ result opaque_adc::stop() noexcept {
     return status;
   }
 
+  if (uses_injected()) {
+    return result::OK;
+  }
+
   (void)HAL_ADC_Stop(&m_handle);
   const auto status = from_hal_status(HAL_ADC_DeInit(&m_handle));
   if (status == result::OK) {
@@ -838,11 +961,21 @@ result opaque_adc::read(uint16_t& r_value) noexcept {
     return result::OK;
   }
 
+  if (uses_injected()) {
+    const auto injected_value = read_injected_conversion(*this);
+    if (!injected_value.has_value()) {
+      return injected_value.error();
+    }
+
+    r_value = *injected_value;
+    return result::OK;
+  }
+
   if (HAL_ADC_Start(&m_handle) != HAL_OK) {
     return result::RECOVERABLE_ERROR;
   }
 
-  if (HAL_ADC_PollForConversion(&m_handle, HAL_MAX_DELAY) != HAL_OK) {
+  if (HAL_ADC_PollForConversion(&m_handle, polling_timeout_ms()) != HAL_OK) {
     (void)HAL_ADC_Stop(&m_handle);
     return result::RECOVERABLE_ERROR;
   }
@@ -868,6 +1001,21 @@ result opaque_adc::try_read(bool& r_has_value, uint16_t& r_value) noexcept {
 
     r_has_value = true;
     r_value = **dma_value;
+    return result::OK;
+  }
+
+  if (uses_injected()) {
+    const auto injected_value = try_read_injected_conversion(*this);
+    if (!injected_value.has_value()) {
+      return injected_value.error();
+    }
+
+    if (!injected_value->has_value()) {
+      return result::OK;
+    }
+
+    r_has_value = true;
+    r_value = **injected_value;
     return result::OK;
   }
 

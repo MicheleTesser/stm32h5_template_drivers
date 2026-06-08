@@ -5,12 +5,16 @@
 #include <variant>
 
 #include "stm32h5xx_hal.h"
+#include "stm32h5xx_hal_adc_ex.h"
 
 namespace ru::driver::stm32h5xx::cfg {
 enum class adc_dma_backend {
   average_since_read,
   fixed_window_average,
 };
+
+inline constexpr uint32_t kDefaultAdcPollTimeoutMs = 2U;
+inline constexpr uint16_t kDefaultAdcSampleMax = 4095U;
 
 struct gpio_config {
   uintptr_t port_base;
@@ -36,10 +40,14 @@ struct adc_config {
   GPIO_InitTypeDef pin_init;
   ADC_InitTypeDef init;
   ADC_ChannelConfTypeDef channel_init;
+  ADC_InjectionConfTypeDef injected_channel_init;
+  uint32_t polling_timeout_ms;
+  uint16_t sample_max;
   const ADC_ChannelConfTypeDef* dma_channel_sequence;
   std::size_t dma_channel_sequence_length;
   std::size_t dma_sequence_index;
   bool uses_dma;
+  bool uses_injected;
   std::size_t dma_frame_count;
   adc_dma_backend dma_backend;
   std::size_t dma_window_width;
@@ -75,17 +83,22 @@ struct adc_config {
   static constexpr adc_config polling_config(
       const uintptr_t instance_base, const uintptr_t port_base,
       const GPIO_InitTypeDef& pin_init, const ADC_InitTypeDef& init,
-      const ADC_ChannelConfTypeDef& channel_init) noexcept {
+      const ADC_ChannelConfTypeDef& channel_init,
+      const uint32_t polling_timeout_ms = kDefaultAdcPollTimeoutMs) noexcept {
     return adc_config{
         .instance_base = instance_base,
         .port_base = port_base,
         .pin_init = pin_init,
         .init = init,
         .channel_init = channel_init,
+        .injected_channel_init = {},
+        .polling_timeout_ms = polling_timeout_ms,
+        .sample_max = kDefaultAdcSampleMax,
         .dma_channel_sequence = nullptr,
         .dma_channel_sequence_length = 0U,
         .dma_sequence_index = 0U,
         .uses_dma = false,
+        .uses_injected = false,
         .dma_frame_count = 0U,
         .dma_backend = adc_dma_backend::average_since_read,
         .dma_window_width = 0U,
@@ -122,10 +135,14 @@ struct adc_config {
         .pin_init = pin_init,
         .init = init,
         .channel_init = channel_init,
+        .injected_channel_init = {},
+        .polling_timeout_ms = 0U,
+        .sample_max = kDefaultAdcSampleMax,
         .dma_channel_sequence = dma_channel_sequence,
         .dma_channel_sequence_length = dma_channel_sequence_length,
         .dma_sequence_index = dma_sequence_index,
         .uses_dma = true,
+        .uses_injected = false,
         .dma_frame_count = dma_frame_count,
         .dma_backend = dma_backend,
         .dma_window_width = dma_window_width,
@@ -137,6 +154,40 @@ struct adc_config {
         .trigger_frequency_hz = trigger_frequency_hz,
         .trigger_timer_init = trigger_timer_init,
         .trigger_master_config = trigger_master_config,
+    };
+  }
+
+  static constexpr adc_config injected_config(
+      const uintptr_t instance_base, const uintptr_t port_base,
+      const GPIO_InitTypeDef& pin_init,
+      const ADC_InjectionConfTypeDef& injected_channel_init,
+      const uint16_t sample_max,
+      const uint32_t polling_timeout_ms = kDefaultAdcPollTimeoutMs) noexcept {
+    return adc_config{
+        .instance_base = instance_base,
+        .port_base = port_base,
+        .pin_init = pin_init,
+        .init = {},
+        .channel_init = {},
+        .injected_channel_init = injected_channel_init,
+        .polling_timeout_ms = polling_timeout_ms,
+        .sample_max = sample_max,
+        .dma_channel_sequence = nullptr,
+        .dma_channel_sequence_length = 0U,
+        .dma_sequence_index = 0U,
+        .uses_dma = false,
+        .uses_injected = true,
+        .dma_frame_count = 0U,
+        .dma_backend = adc_dma_backend::average_since_read,
+        .dma_window_width = 0U,
+        .dma_request = 0U,
+        .dma_channel_base = 0U,
+        .dma_irq = static_cast<IRQn_Type>(0),
+        .trigger_timer_instance_base = 0U,
+        .trigger_counter_clock_hz = 0U,
+        .trigger_frequency_hz = 0U,
+        .trigger_timer_init = {},
+        .trigger_master_config = {},
     };
   }
 };

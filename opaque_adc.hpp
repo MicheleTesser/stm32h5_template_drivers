@@ -28,11 +28,15 @@ struct opaque_adc {
   }
 
   bool uses_dma() const noexcept;
+  bool uses_injected() const noexcept;
   ADC_TypeDef* instance() const noexcept;
   GPIO_TypeDef* port() const noexcept;
   const GPIO_InitTypeDef& pin_init() const noexcept;
   const ADC_InitTypeDef& adc_init() const noexcept;
   const ADC_ChannelConfTypeDef& channel_init() const noexcept;
+  const ADC_InjectionConfTypeDef& injected_channel_init() const noexcept;
+  uint32_t polling_timeout_ms() const noexcept;
+  uint16_t sample_max() const noexcept;
   const ADC_ChannelConfTypeDef* dma_channel_sequence() const noexcept;
   std::size_t dma_frame_count() const noexcept;
   std::size_t dma_sequence_length() const noexcept;
